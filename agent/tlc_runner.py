@@ -10,9 +10,23 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
 
-TLC_JAR = os.path.expanduser(
-    "~/.vscode/extensions/tlaplus.vscode-ide-2026.5.81518/tools/tla2tools.jar"
-)
+def _find_tlc_jar() -> str:
+    """Find tla2tools.jar automatically — works even after VS Code extension updates."""
+    import glob
+    patterns = [
+        os.path.expanduser("~/.vscode/extensions/tlaplus.*/tools/tla2tools.jar"),
+        os.path.expanduser("~/.vscode-insiders/extensions/tlaplus.*/tools/tla2tools.jar"),
+        "/usr/local/lib/tla2tools.jar",
+    ]
+    for pattern in patterns:
+        matches = glob.glob(pattern)
+        if matches:
+            return sorted(matches)[-1]  # take the newest version
+    raise FileNotFoundError(
+        "Could not find tla2tools.jar. Make sure the TLA+ extension is installed in VS Code."
+    )
+
+TLC_JAR = _find_tlc_jar()
 
 SPECS_DIR = Path(__file__).parent.parent / "specs"
 
