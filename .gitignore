@@ -1,0 +1,13 @@
+# TLC model checker generated files
+specs/*_TTrace_*.tla
+specs/*_TTrace_*.bin
+specs/states/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Mac
+.DS_Store
