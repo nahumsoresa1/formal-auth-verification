@@ -5,15 +5,15 @@ TLA+ Security Verification Agent
 Automatically verifies security protocols using TLA+ and TLC.
 
 The agent:
-  1. Loads a TLA+ spec (pre-written or from specs/ folder)
-  2. Runs TLC to exhaustively check all states
-  3. If a security violation is found, uses an LLM to explain the attack
-  4. Loops until verified or max iterations reached
+  1. Loads a pre-written TLA+ spec from specs/
+  2. Runs TLC to exhaustively check all reachable states
+  3. If a violation is found, uses a local LLM (Ollama) to explain the attack
+  4. If a fixed version exists, runs it and confirms the fix works
 
 Usage:
-  python3 main.py --demo insecure     # insecure login (replay attack demo)
-  python3 main.py --demo ns           # Needham-Schroeder (coming soon)
-  python3 main.py --spec MyProtocol   # run TLC on specs/MyProtocol.tla
+  python3 main.py --demo insecure     # replay attack on login protocol
+  python3 main.py --demo ns           # Needham-Schroeder MITM attack
+  python3 main.py --spec MyProtocol   # run any spec in specs/
 """
 
 import sys
@@ -26,111 +26,152 @@ sys.path.insert(0, str(Path(__file__).parent))
 import llm_client
 import tlc_runner
 
-# ── Built-in demos — point directly at pre-written specs ──────────────────────
+# ── Built-in demos ─────────────────────────────────────────────────────────────
 
 DEMOS = {
     "insecure": {
-        "module": "InsecureLogin",
-        "title":  "Insecure Login Protocol (Replay Attack)",
+        "module":       "InsecureLogin",
+        "fixed_module": "SecureLogin",
+        "title":        "Insecure Login Protocol",
+        "description":  "Plaintext credential transmission — replay attack",
     },
     "ns": {
-        "module": "NeedhamSchroeder",
-        "title":  "Needham-Schroeder Protocol (coming soon)",
+        "module":       "NeedhamSchroeder",
+        "fixed_module": "NeedhamSchroederFixed",
+        "title":        "Needham-Schroeder Public Key Protocol (1978)",
+        "description":  "Believed secure for 17 years — Lowe found the MITM attack in 1995",
     },
 }
 
-# ── Pretty print helpers ───────────────────────────────────────────────────────
+# ── Output helpers ─────────────────────────────────────────────────────────────
 
-def header(text):
-    print(f"\n{'═' * 65}\n  {text}\n{'═' * 65}\n")
+def banner(text):
+    width = 65
+    print(f"\n{'═' * width}")
+    print(f"  {text}")
+    print(f"{'═' * width}\n")
 
 def section(text):
-    print(f"\n{'─' * 65}\n  {text}\n{'─' * 65}")
+    print(f"\n{'─' * 65}")
+    print(f"  {text}")
+    print(f"{'─' * 65}")
 
 def ok(text):
-    print(f"\n✅  {text}")
+    print(f"\n  ✅  {text}")
 
 def fail(text):
-    print(f"\n❌  {text}")
+    print(f"\n  ❌  {text}")
 
 def info(text):
-    print(f"    {text}")
+    print(f"      {text}")
 
-# ── Core verification loop ─────────────────────────────────────────────────────
+def result_summary(label, passed, states):
+    status = "VERIFIED SECURE" if passed else "VIOLATION FOUND"
+    symbol = "✅" if passed else "❌"
+    states_str = f"  ({states:,} states explored)" if states else ""
+    print(f"\n  {symbol}  {label}: {status}{states_str}")
 
-def verify(module_name: str, title: str, max_iterations: int = 3):
-    """
-    Main loop:
-      run TLC → if violation → LLM explains → loop
-    """
-    header(f"TLA+ Security Verification Agent\n  Protocol: {title}")
+# ── Core verification ──────────────────────────────────────────────────────────
 
+def run_spec(module_name: str) -> tlc_runner.TLCResult:
+    """Run TLC on a spec and return the result."""
     specs_dir = Path(__file__).parent.parent / "specs"
-    spec_file = specs_dir / f"{module_name}.tla"
+    spec_file  = specs_dir / f"{module_name}.tla"
 
     if not spec_file.exists():
-        fail(f"Spec not found: specs/{module_name}.tla")
+        print(f"\n  Spec not found: specs/{module_name}.tla")
+        return None
+
+    section(f"Running TLC on: {module_name}.tla")
+    result = tlc_runner.run_tlc(module_name)
+
+    if result.states_explored:
+        info(f"States explored: {result.states_explored:,}")
+
+    if "Parse Error" in result.output or "Parsing or semantic analysis failed" in result.output:
+        fail("TLC could not parse the spec — syntax error.")
+        print(result.output[:800])
+        return result
+
+    return result
+
+
+def explain_attack(module_name: str, result: tlc_runner.TLCResult):
+    """Use the LLM to explain the attack from the counterexample."""
+    specs_dir = Path(__file__).parent.parent / "specs"
+    spec_text  = (specs_dir / f"{module_name}.tla").read_text()
+
+    section("Counterexample — Attack Trace")
+    if result.counterexample:
+        # Print the trace cleanly, skip the long TLC header lines
+        lines = result.counterexample.splitlines()
+        for line in lines:
+            if line.strip():
+                print(f"  {line}")
+
+    section("LLM Attack Analysis")
+    llm_client.analyze_violation(spec_text, result.output)
+
+
+def verify(module_name: str, fixed_module: str = None, title: str = None):
+    """
+    Full verification loop:
+      1. Run TLC on the base spec
+      2. If violated — LLM explains the attack
+      3. If a fixed spec exists — run it and confirm
+    """
+    display_title = title or module_name
+    banner(f"TLA+ Security Verification Agent\n  Protocol: {display_title}")
+
+    # ── Run base spec ──────────────────────────────────────────────────────────
+    result = run_spec(module_name)
+    if result is None:
         return
 
-    info(f"Spec: specs/{module_name}.tla")
+    result_summary(module_name, result.passed, result.states_explored)
 
-    for iteration in range(max_iterations + 1):
+    if result.passed:
+        ok("Protocol is verified secure — no attacks found.")
+        return
 
-        # ── Run TLC ───────────────────────────────────────────────────────────
-        section(f"Running TLC — iteration {iteration + 1}")
-        result = tlc_runner.run_tlc(module_name)
+    if result.violation_found:
+        fail("Security violation found — protocol is not secure.")
+        explain_attack(module_name, result)
 
-        if result.states_explored:
-            info(f"States explored: {result.states_explored:,}")
-
-        # ── Parse error in the spec ───────────────────────────────────────────
-        if "Parse Error" in result.output or "Parsing or semantic analysis failed" in result.output:
-            fail("TLC could not parse the spec — syntax error.")
-            print(result.output[:1000])
-            return
-
-        # ── Protocol is verified secure ───────────────────────────────────────
-        if result.passed:
-            ok("TLC verified the protocol — no violations found.")
-            info("The security property holds across all reachable states.")
-            return
-
-        # ── Violation found — LLM explains ────────────────────────────────────
-        if result.violation_found:
-            fail("Security violation found!")
-
-            if result.counterexample:
-                section("Counterexample Trace")
-                print(result.counterexample)
-
-            if iteration >= max_iterations:
-                fail(f"Reached max iterations ({max_iterations}).")
-                return
-
-            section("LLM Attack Analysis")
-            spec_text = spec_file.read_text()
-            analysis  = llm_client.analyze_violation(spec_text, result.output)
-
-            # ── If there's a fixed version available, run it next ─────────────
-            fixed_module = f"{module_name}Secure"
-            fixed_file   = specs_dir / f"{fixed_module}.tla"
+        # ── Run fixed spec if available ────────────────────────────────────────
+        if fixed_module:
+            specs_dir  = Path(__file__).parent.parent / "specs"
+            fixed_file = specs_dir / f"{fixed_module}.tla"
 
             if fixed_file.exists():
-                section(f"Running fixed version: specs/{fixed_module}.tla")
-                fixed_result = tlc_runner.run_tlc(fixed_module)
-                if fixed_result.passed:
-                    ok(f"{fixed_module} is verified secure — the fix works.")
-                else:
-                    fail(f"{fixed_module} still has violations.")
-                return
+                section(f"Verifying the fix: {fixed_module}.tla")
+                fixed_result = run_spec(fixed_module)
 
-            info("No fixed spec found yet. Add one at specs/{module_name}Secure.tla")
-            return
-
-        # ── Unclear result ─────────────────────────────────────────────────────
-        fail("TLC finished but result is unclear.")
-        print(result.output[:1500])
+                if fixed_result and fixed_result.passed:
+                    result_summary(fixed_module, True, fixed_result.states_explored)
+                    ok("The fix is verified — the attack is no longer possible.")
+                    _print_comparison(module_name, result, fixed_module, fixed_result)
+                elif fixed_result:
+                    result_summary(fixed_module, False, fixed_result.states_explored)
+                    fail("Fixed spec still has violations.")
+            else:
+                info(f"No fixed spec found at specs/{fixed_module}.tla")
         return
+
+    fail("TLC finished but result is unclear.")
+    print(result.output[:1000])
+
+
+def _print_comparison(broken: str, broken_result, fixed: str, fixed_result):
+    """Print a side-by-side summary of broken vs fixed."""
+    section("Summary")
+    print(f"  {'Protocol':<35} {'Result':<20} States")
+    print(f"  {'─' * 60}")
+    states_b = f"{broken_result.states_explored:,}" if broken_result.states_explored else "?"
+    states_f = f"{fixed_result.states_explored:,}"  if fixed_result.states_explored  else "?"
+    print(f"  {'❌  ' + broken:<35} {'VIOLATED':<20} {states_b}")
+    print(f"  {'✅  ' + fixed:<35} {'VERIFIED':<20} {states_f}")
+    print()
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -141,20 +182,24 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Examples:
-              python3 main.py --demo insecure
-              python3 main.py --spec InsecureLogin
+              python3 main.py --demo insecure   # replay attack on login protocol
+              python3 main.py --demo ns         # Needham-Schroeder MITM attack
+              python3 main.py --spec MyProto    # run specs/MyProto.tla
         """),
     )
-    parser.add_argument("--demo",     choices=list(DEMOS.keys()), help="Run a built-in demo")
-    parser.add_argument("--spec",     help="Module name of a spec in specs/ folder")
-    parser.add_argument("--max-iter", type=int, default=3, help="Max fix iterations (default: 3)")
+    parser.add_argument("--demo", choices=list(DEMOS.keys()), help="Run a built-in demo")
+    parser.add_argument("--spec", help="Module name of any spec in specs/")
     args = parser.parse_args()
 
     if args.demo:
         d = DEMOS[args.demo]
-        verify(d["module"], d["title"], max_iterations=args.max_iter)
+        verify(
+            module_name  = d["module"],
+            fixed_module = d.get("fixed_module"),
+            title        = f"{d['title']} — {d['description']}",
+        )
     elif args.spec:
-        verify(args.spec, args.spec, max_iterations=args.max_iter)
+        verify(module_name=args.spec)
     else:
         parser.print_help()
 
