@@ -143,15 +143,21 @@ def generative_loop(
     attack_summary = llm_client.summarize_attack(analysis)
 
     invariant = _invariant_from_cfg(module_name)
+    previous_error: str = None   # fed back to the LLM on retries
 
     for iteration in range(1, max_iterations + 1):
         section(f"Generative Loop — Iteration {iteration} of {max_iterations}")
-        info(f"Attack summary: {attack_summary[:120]}")
 
-        # ── Step 2: LLM generates the fix ─────────────────────────────────────
-        generated_tla = llm_client.generate_fix(spec_text, attack_summary, fixed_module_name)
+        # ── Step 2: LLM generates (or retries) the fix ────────────────────────
+        generated_tla = llm_client.generate_fix(
+            spec_text,
+            attack_summary,
+            fixed_module_name,
+            previous_error=previous_error,
+        )
 
         if not generated_tla or len(generated_tla) < 50:
+            previous_error = "The response contained no valid TLA+ code block."
             fail("LLM did not produce a valid TLA+ block — retrying.")
             continue
 
@@ -169,9 +175,22 @@ def generative_loop(
         if fixed_result.states_explored:
             info(f"States explored: {fixed_result.states_explored:,}")
 
-        if "Parse Error" in fixed_result.output or "Parsing or semantic analysis failed" in fixed_result.output:
-            fail(f"Iteration {iteration}: parse error in generated spec — retrying.")
-            print(fixed_result.output[:600])
+        is_parse_error = (
+            "Parse Error" in fixed_result.output
+            or "Parsing or semantic analysis failed" in fixed_result.output
+            or "***Parse" in fixed_result.output
+        )
+
+        if is_parse_error:
+            # Extract the most useful part of the TLC error for the retry prompt
+            error_lines = [
+                ln for ln in fixed_result.output.splitlines()
+                if ln.strip() and not ln.startswith("TLC2") and not ln.startswith("Warning")
+                   and not ln.startswith("Running") and not ln.startswith("(Mac")
+            ]
+            previous_error = "\n".join(error_lines[:20])
+            fail(f"Iteration {iteration}: parse error in generated spec:")
+            print(f"  {previous_error[:300]}")
             continue
 
         result_summary(fixed_module_name, fixed_result.passed, fixed_result.states_explored)
@@ -181,12 +200,15 @@ def generative_loop(
             _print_comparison(module_name, base_result, fixed_module_name, fixed_result)
             return True
 
-        fail(f"Iteration {iteration}: invariant still violated — retrying with updated context.")
-        # Feed the failure back so the next prompt has more context
-        attack_summary = (
-            f"{attack_summary} "
-            f"[Previous fix attempt failed — TLC still found a violation. "
-            f"Strengthen the fix.]"
+        # Logical violation — extract counterexample as feedback
+        fail(f"Iteration {iteration}: invariant still violated — retrying with counterexample.")
+        ce = fixed_result.counterexample or fixed_result.output[:400]
+        previous_error = (
+            f"TLC found a violation. The attacker still gets the token.\n"
+            f"Counterexample:\n{ce[:500]}\n\n"
+            f"The fix must make AttackerExchangeCode IMPOSSIBLE to execute. "
+            f"Add the guard /\\ attackerKnowsVerifier = TRUE inside AttackerExchangeCode, "
+            f"and never set attackerKnowsVerifier to TRUE anywhere else."
         )
 
     fail(f"Could not generate a working fix after {max_iterations} iterations.")

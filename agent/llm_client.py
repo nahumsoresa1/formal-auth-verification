@@ -13,6 +13,7 @@ from prompts import (
     SYSTEM_PROMPT,
     ANALYZE_VIOLATION_PROMPT,
     FIX_SPEC_PROMPT,
+    FIX_SPEC_RETRY_PROMPT,
 )
 
 MODEL = "llama3.1"
@@ -58,20 +59,38 @@ def analyze_violation(spec: str, tlc_output: str) -> str:
     return _call_ollama(prompt)
 
 
-def generate_fix(spec: str, attack_summary: str, fixed_module_name: str) -> str:
+def generate_fix(
+    spec: str,
+    attack_summary: str,
+    fixed_module_name: str,
+    previous_error: str = None,
+) -> str:
     """
     Ask the LLM to generate a corrected TLA+ spec that blocks the discovered attack.
     Returns raw TLA+ text (no markdown fences).
 
+    On the first attempt (previous_error=None) uses FIX_SPEC_PROMPT.
+    On retries (previous_error set) uses FIX_SPEC_RETRY_PROMPT, which includes
+    the specific parse error or violation so the LLM can learn from its mistake.
+
     This is the core of the generative loop:
       LLM explains attack → LLM proposes fix → TLC verifies fix → repeat if needed
     """
-    print(f"\n🔧 Generating fixed spec: {fixed_module_name}\n{'─' * 60}")
-    prompt = FIX_SPEC_PROMPT.format(
-        spec=spec,
-        attack_summary=attack_summary,
-        fixed_module_name=fixed_module_name,
-    )
+    if previous_error:
+        print(f"\n🔧 Retrying fixed spec (with error feedback): {fixed_module_name}\n{'─' * 60}")
+        prompt = FIX_SPEC_RETRY_PROMPT.format(
+            spec=spec,
+            attack_summary=attack_summary,
+            fixed_module_name=fixed_module_name,
+            previous_error=previous_error[:800],   # keep prompt size reasonable
+        )
+    else:
+        print(f"\n🔧 Generating fixed spec: {fixed_module_name}\n{'─' * 60}")
+        prompt = FIX_SPEC_PROMPT.format(
+            spec=spec,
+            attack_summary=attack_summary,
+            fixed_module_name=fixed_module_name,
+        )
     response = _call_ollama(prompt)
     return _extract_tla_block(response)
 

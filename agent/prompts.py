@@ -53,21 +53,132 @@ Attack found: {attack_summary}
 
 Generate a fixed version of this spec that prevents the attack.
 
-STRICT REQUIREMENTS:
-1. Module name must be exactly: {fixed_module_name}
-2. Keep all the same variables but add whatever is needed to block the attack
-3. The attacker actions must still exist but must be blocked by the fix
+━━━ REQUIREMENTS ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Module name must be EXACTLY: {fixed_module_name}
+2. Add whatever new variables/constants are needed to block the attack
+3. The attacker action must still EXIST but be BLOCKED (its guard must be impossible to satisfy)
 4. The invariant must HOLD in the fixed version
-5. Follow TLA+ syntax exactly:
-   - Module header: ---- MODULE {fixed_module_name} ----
-   - Module footer: ====
-   - Use /\\ for AND, \\/ for OR, ~ for NOT
-   - UNCHANGED <<var1, var2>> for unchanged variables
-   - Spec == Init /\\ [][Next]_vars
+5. Output ONLY the TLA+ spec — no explanations, no commentary
 
-Common fixes:
-- Replay attack → add a nonce: server issues fresh value, marks it used after verification
-- MITM attack → add identity to messages: receiver verifies sender matches expected partner
-- Code interception → add code_verifier: secret that was never transmitted
+━━━ TLA+ SYNTAX — READ CAREFULLY ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Module header:  ---- MODULE {fixed_module_name} ----   (four dashes each side)
+- Module footer:  ====   (exactly four equals signs, last line, nothing after)
+- Conjunction:    /\\
+- Disjunction:    \\/
+- Negation:       ~
+- NOT-EQUAL:      #   ← NEVER use !=  (it is not valid TLA+)
+- String values:  "idle"  "done"  "none"  "client"  "attacker"
+- UNCHANGED:      UNCHANGED <<var1, var2, var3>>
 
-Output ONLY the fixed TLA+ spec in a ```tla ... ``` code block. Nothing else."""
+VARIABLES LIST — the last variable must have NO trailing comma:
+    VARIABLES
+      phase,            \\* comment
+      codeOnWire,       \\* comment
+      tokenHolder       \\* ← NO comma on the last variable
+
+DO NOT USE:
+  - Function calls like hash(), fresh_code(), random() — these are not valid TLA+
+  - !=  (use # instead)
+  - === (the footer is exactly ====)
+  - Any operator not listed above
+
+━━━ HOW TO FIX EACH ATTACK TYPE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+CODE INTERCEPTION / OAUTH2 → PKCE PATTERN:
+  Add CONSTANT  ClientVerifier
+  Add variable  attackerKnowsVerifier   initialized to FALSE, never set to TRUE
+  In AuthServerIssueCode:    storedChallenge' = ClientVerifier
+  In ClientExchangeCode:     add guard  /\\ storedChallenge = ClientVerifier
+  In AttackerExchangeCode:   add guard  /\\ attackerKnowsVerifier = TRUE
+  Since attackerKnowsVerifier is always FALSE → AttackerExchangeCode is NEVER enabled.
+
+REPLAY ATTACK → NONCE PATTERN:
+  Add variable  nonce   initialized to "none"
+  Server sets:  nonce' = "challenge1"
+  Client checks:  nonce # "none"  and sets  nonce' = "used"
+  Attacker action requires fresh nonce — impossible once used.
+
+MITM ATTACK → IDENTITY BINDING:
+  Add sender field to messages: sender |-> ActualSender
+  Receiver verifies: m.sender = ExpectedPartner
+
+━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Output ONLY the fixed TLA+ spec inside a ```tla ... ``` code block. Nothing else."""
+
+
+FIX_SPEC_RETRY_PROMPT = """Your previous attempt to fix this TLA+ spec failed. Study the error and try again.
+
+Original spec:
+```tla
+{spec}
+```
+
+Attack to prevent: {attack_summary}
+
+Your previous fix produced this error:
+```
+{previous_error}
+```
+
+Generate a corrected TLA+ spec with module name exactly: {fixed_module_name}
+
+━━━ COMMON ERRORS AND HOW TO FIX THEM ━━━━━━━━━━━━━━━━━━━━━━
+- "Unexpected symbol" or "Parse error" near != → replace != with #
+- "Parse error" near a variable list → remove trailing comma from last variable
+- "Unexpected symbol" near === → the footer must be exactly ==== (four = signs)
+- "undefined or declared twice" → you called a function like hash() or fresh() — remove it, use a CONSTANT instead
+- Invariant still violated → your attacker action is not truly blocked; add /\\ attackerKnowsVerifier = TRUE to AttackerExchangeCode, and never set attackerKnowsVerifier to TRUE anywhere
+
+━━━ CORRECT PKCE FIX TEMPLATE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use this exact pattern to block code interception:
+
+  CONSTANTS Client, AuthServer, Attacker, ClientVerifier
+
+  VARIABLES
+    phase,
+    storedChallenge,
+    codeOnWire,
+    codeUsed,
+    attackerHasCode,
+    attackerKnowsVerifier,
+    tokenHolder
+
+  Init ==
+    /\\ phase                 = "idle"
+    /\\ storedChallenge       = "none"
+    /\\ codeOnWire            = FALSE
+    /\\ codeUsed              = FALSE
+    /\\ attackerHasCode       = FALSE
+    /\\ attackerKnowsVerifier = FALSE
+    /\\ tokenHolder           = "none"
+
+  AuthServerIssueCode ==
+    /\\ phase            = "idle"
+    /\\ storedChallenge' = ClientVerifier
+    /\\ codeOnWire'      = TRUE
+    /\\ phase'           = "code_issued"
+    /\\ UNCHANGED <<codeUsed, attackerHasCode, attackerKnowsVerifier, tokenHolder>>
+
+  AttackerInterceptCode ==
+    /\\ codeOnWire       = TRUE
+    /\\ attackerHasCode' = TRUE
+    /\\ UNCHANGED <<phase, storedChallenge, codeOnWire, codeUsed, attackerKnowsVerifier, tokenHolder>>
+
+  ClientExchangeCode ==
+    /\\ phase            = "code_issued"
+    /\\ ~codeUsed
+    /\\ storedChallenge  = ClientVerifier
+    /\\ codeUsed'    = TRUE
+    /\\ tokenHolder' = "client"
+    /\\ phase'       = "done"
+    /\\ UNCHANGED <<storedChallenge, codeOnWire, attackerHasCode, attackerKnowsVerifier>>
+
+  AttackerExchangeCode ==
+    /\\ attackerHasCode       = TRUE
+    /\\ attackerKnowsVerifier = TRUE
+    /\\ ~codeUsed
+    /\\ codeUsed'    = TRUE
+    /\\ tokenHolder' = "attacker"
+    /\\ UNCHANGED <<phase, storedChallenge, codeOnWire, attackerHasCode, attackerKnowsVerifier>>
+
+Output ONLY the fixed TLA+ spec inside a ```tla ... ``` code block. Nothing else."""
