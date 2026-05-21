@@ -98,21 +98,56 @@ def _invariant_from_cfg(module_name: str) -> str:
     return None
 
 
+_CFG_NEXT_SECTION_KEYWORDS = {
+    "SPECIFICATION", "INVARIANT", "PROPERTY", "CHECK_DEADLOCK",
+    "SYMMETRY", "INIT", "NEXT", "VIEW", "CONSTANT",
+}
+
 def _build_cfg_for_generated(module_name: str, invariant: str) -> str:
     """
-    Generate a minimal .cfg for an LLM-produced spec.
-    Reuses CONSTANTS from the base spec's cfg where possible.
+    Build a .cfg for an LLM-generated spec.
+
+    Copies the FULL CONSTANTS block from the base spec's cfg (not just the
+    header line) so TLC has all constant assignments, then appends
+    ClientVerifier = verifier1 if it isn't already present.
     """
     specs_dir = Path(__file__).parent.parent / "specs"
     base_name = module_name.replace("LLMFixed", "")
     base_cfg  = specs_dir / f"{base_name}.cfg"
 
     lines = ["SPECIFICATION Spec"]
+
     if base_cfg.exists():
-        for line in base_cfg.read_text().splitlines():
-            if line.strip().startswith("CONSTANTS"):
-                lines.append(line)
-                break
+        cfg_lines = base_cfg.read_text().splitlines()
+        in_constants = False
+        constants_block: list[str] = []
+        has_client_verifier = False
+
+        for line in cfg_lines:
+            stripped = line.strip()
+            if stripped.upper().startswith("CONSTANTS"):
+                in_constants = True
+                constants_block.append(line)
+                if "ClientVerifier" in line:
+                    has_client_verifier = True
+            elif in_constants:
+                first_word = stripped.split()[0] if stripped.split() else ""
+                if first_word.upper() in _CFG_NEXT_SECTION_KEYWORDS:
+                    in_constants = False          # done reading CONSTANTS
+                else:
+                    constants_block.append(line)
+                    if "ClientVerifier" in line:
+                        has_client_verifier = True
+
+        if constants_block:
+            lines.extend(constants_block)
+            if not has_client_verifier:
+                lines.append("  ClientVerifier = verifier1")
+        else:
+            # Base cfg has no CONSTANTS block — build a minimal one
+            lines.append("CONSTANTS")
+            lines.append("  ClientVerifier = verifier1")
+
     if invariant:
         lines.append(f"INVARIANT {invariant}")
     lines.append("CHECK_DEADLOCK FALSE")
@@ -219,7 +254,9 @@ def generative_loop(
 
         # Logical violation — extract counterexample as feedback
         fail(f"Iteration {iteration}: invariant still violated — retrying with counterexample.")
-        ce = fixed_result.counterexample or fixed_result.output[:400]
+        ce = fixed_result.counterexample or ""
+        if ce:
+            print(f"\n  TLC trace:\n{ce[:600]}")
         previous_error = (
             f"TLC found a violation. The attacker still gets the token.\n"
             f"Counterexample:\n{ce[:500]}\n\n"

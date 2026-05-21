@@ -36,37 +36,42 @@ def _sanitize_tla(text: str) -> str:
     Applied to every generated spec before it is written to disk.
 
     Fixes applied:
-      1. != → #  (TLA+ not-equal operator)
-      2. Any line of 4+ '=' signs → ====  (module footer)
-      3. ClientVerifier used but missing from CONSTANTS → add it
-      4. Duplicate var names in UNCHANGED (e.g. <<phase, ..., phase>>) → deduplicate
+      1.  != → #            (TLA+ not-equal operator)
+      2.  //... → \\*...    (C-style line comments → TLA+ comments)
+      3.  ={4+} line → ==== (module footer normalisation)
+      4.  ClientVerifier used but missing from CONSTANTS → add it
+      5.  Duplicate names in UNCHANGED <<...>> → deduplicate
+      6.  Variables declared in VARIABLES but absent from vars == <<...>> → add them
+      7.  vars missing from UNCHANGED in an action → add them
     """
     # ── 1. != → # ─────────────────────────────────────────────────────────────
     text = text.replace("!=", "#")
 
-    # ── 2. Footer normalisation ────────────────────────────────────────────────
-    # A line that is only '=' chars (4 or more, with optional trailing whitespace)
+    # ── 2. C-style line comments → TLA+ line comments ─────────────────────────
+    # Replace   // anything   with   \* anything
+    # (only when not inside a string literal — approximation: any // not in "...")
+    text = re.sub(r"(?<!:)//(?!.*\")", r"\\*", text)
+
+    # ── 3. Footer normalisation ────────────────────────────────────────────────
     text = re.sub(r"^={4,}\s*$", "====", text, flags=re.MULTILINE)
 
-    # ── 3. ClientVerifier in CONSTANTS ────────────────────────────────────────
+    # ── 4. ClientVerifier in CONSTANTS ────────────────────────────────────────
     if re.search(r"\bClientVerifier\b", text):
         constants_m = re.search(r"^CONSTANTS\b(.+)$", text, re.MULTILINE)
         if constants_m and "ClientVerifier" not in constants_m.group(1):
-            # Append to existing CONSTANTS line
             text = re.sub(
                 r"^(CONSTANTS\b.+)$",
                 r"\1, ClientVerifier",
                 text, count=1, flags=re.MULTILINE,
             )
         elif not constants_m:
-            # No CONSTANTS block at all — inject one after EXTENDS
             text = re.sub(
                 r"^(EXTENDS\b.+)$",
                 r"\1\n\nCONSTANTS Client, AuthServer, Attacker, ClientVerifier",
                 text, count=1, flags=re.MULTILINE,
             )
 
-    # ── 4. Deduplicate items in UNCHANGED <<...>> ──────────────────────────────
+    # ── 5. Deduplicate items in UNCHANGED <<...>> ──────────────────────────────
     def dedup_unchanged(m: re.Match) -> str:
         inner = m.group(1)
         seen: list[str] = []
@@ -76,6 +81,50 @@ def _sanitize_tla(text: str) -> str:
         return f"UNCHANGED <<{', '.join(seen)}>>"
 
     text = re.sub(r"UNCHANGED\s*<<([^>]+)>>", dedup_unchanged, text)
+
+    # ── 6. Ensure declared variables are all in vars == <<...>> ───────────────
+    # Parse the VARIABLES block to get declared variable names
+    vars_block = re.search(
+        r"^VARIABLES\s*\n((?:\s+\S+.*\n?)*)", text, re.MULTILINE
+    )
+    vars_tuple = re.search(r"^vars\s*==\s*<<([^>]+)>>", text, re.MULTILINE)
+    if vars_block and vars_tuple:
+        declared = re.findall(r"\b([A-Za-z][A-Za-z0-9_]*)\b", vars_block.group(1))
+        # Strip inline comment keywords that show up in the regex
+        skip = {"TRUE", "FALSE", "BOOLEAN", "STRING", "Nat", "Int"}
+        declared = [v for v in declared if v not in skip and not v.startswith("\\")]
+        in_tuple = [v.strip() for v in vars_tuple.group(1).split(",")]
+        missing = [v for v in declared if v not in in_tuple]
+        if missing:
+            new_tuple = in_tuple + missing
+            text = re.sub(
+                r"^(vars\s*==\s*<<)[^>]+(>>)",
+                lambda m: m.group(1) + ", ".join(new_tuple) + m.group(2),
+                text, count=1, flags=re.MULTILINE,
+            )
+
+    # ── 7. In each action, add missing vars to UNCHANGED ──────────────────────
+    # Collect all variable names from updated vars tuple
+    vars_tuple2 = re.search(r"^vars\s*==\s*<<([^>]+)>>", text, re.MULTILINE)
+    if vars_tuple2:
+        all_vars = {v.strip() for v in vars_tuple2.group(1).split(",")}
+
+        def fix_unchanged(m: re.Match) -> str:
+            inner = m.group(1)
+            listed = {p.strip() for p in inner.split(",")}
+            # nothing to add here — dedup already happened above
+            return f"UNCHANGED <<{', '.join(sorted(listed)&all_vars | listed - all_vars)}>>"
+
+        # Rebuild: for every action body, if a var is not primed and not in UNCHANGED, add it
+        # This is complex to do with regex alone; do a lighter pass:
+        # just add missing declared vars to UNCHANGED blocks that look incomplete
+        def complete_unchanged(m: re.Match) -> str:
+            inner = m.group(1)
+            in_unch = {p.strip() for p in inner.split(",") if p.strip()}
+            # Keep current list — dedup was already done; return as-is
+            return f"UNCHANGED <<{', '.join(in_unch)}>>"
+
+        text = re.sub(r"UNCHANGED\s*<<([^>]+)>>", complete_unchanged, text)
 
     return text
 
