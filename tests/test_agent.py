@@ -119,6 +119,42 @@ class TestSecureLogin(unittest.TestCase):
         self.assertTrue(secure.passed,            "SecureLogin should be verified")
 
 
+class TestNeedhamSchroeder(unittest.TestCase):
+    """Needham-Schroeder: insecure version violated, fixed version passes."""
+
+    def test_ns_insecure_finds_attack(self):
+        """TLC must find Lowe's man-in-the-middle attack in the original protocol."""
+        result = tlc_runner.run_tlc("NeedhamSchroeder")
+        self.assertTrue(
+            result.violation_found,
+            "TLC should find the MITM attack in the original NS protocol"
+        )
+
+    def test_ns_insecure_has_counterexample(self):
+        """The counterexample must reference Alice, Bob, and Eve."""
+        result = tlc_runner.run_tlc("NeedhamSchroeder")
+        trace = result.counterexample or ""
+        self.assertTrue(
+            any(name in trace for name in ["Alice", "Bob", "Eve"]),
+            "Counterexample should reference protocol principals"
+        )
+
+    def test_ns_fixed_passes(self):
+        """Lowe's fix must make the Authentication property hold."""
+        result = tlc_runner.run_tlc("NeedhamSchroederFixed")
+        self.assertTrue(
+            result.passed,
+            "NeedhamSchroederFixed should be verified secure with Lowe's fix"
+        )
+
+    def test_ns_contrast(self):
+        """Original NS fails, fixed NS passes — Lowe's fix works."""
+        insecure = tlc_runner.run_tlc("NeedhamSchroeder")
+        fixed    = tlc_runner.run_tlc("NeedhamSchroederFixed")
+        self.assertTrue(insecure.violation_found, "Original NS should be broken")
+        self.assertTrue(fixed.passed,             "Fixed NS should be verified")
+
+
 class TestFullLoop(unittest.TestCase):
     """End-to-end: TLC finds attack, LLM explains it."""
 
