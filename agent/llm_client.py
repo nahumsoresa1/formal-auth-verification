@@ -11,7 +11,6 @@ import re
 import ollama
 from prompts import (
     SYSTEM_PROMPT,
-    GENERATE_SPEC_PROMPT,
     ANALYZE_VIOLATION_PROMPT,
     FIX_SPEC_PROMPT,
 )
@@ -49,17 +48,6 @@ def _call_ollama(prompt: str) -> str:
     return "".join(collected)
 
 
-def generate_spec(protocol_description: str, module_name: str) -> str:
-    """Ask the LLM to generate a TLA+ spec. Returns raw TLA+ text."""
-    print(f"\n Generating TLA+ spec for: {module_name}\n{'─' * 60}")
-    prompt = GENERATE_SPEC_PROMPT.format(
-        protocol_description=protocol_description,
-        module_name=module_name,
-    )
-    response = _call_ollama(prompt)
-    return _extract_tla_block(response)
-
-
 def analyze_violation(spec: str, tlc_output: str) -> str:
     """Ask the LLM to explain the attack from a TLC counterexample."""
     print(f"\n Analyzing counterexample...\n{'─' * 60}")
@@ -70,13 +58,19 @@ def analyze_violation(spec: str, tlc_output: str) -> str:
     return _call_ollama(prompt)
 
 
-def fix_spec(spec: str, attack_summary: str, module_name: str) -> str:
-    """Ask the LLM to generate a fixed spec. Returns raw TLA+ text."""
-    print(f"\n Generating fixed spec...\n{'─' * 60}")
+def generate_fix(spec: str, attack_summary: str, fixed_module_name: str) -> str:
+    """
+    Ask the LLM to generate a corrected TLA+ spec that blocks the discovered attack.
+    Returns raw TLA+ text (no markdown fences).
+
+    This is the core of the generative loop:
+      LLM explains attack → LLM proposes fix → TLC verifies fix → repeat if needed
+    """
+    print(f"\n🔧 Generating fixed spec: {fixed_module_name}\n{'─' * 60}")
     prompt = FIX_SPEC_PROMPT.format(
         spec=spec,
         attack_summary=attack_summary,
-        module_name=module_name,
+        fixed_module_name=fixed_module_name,
     )
     response = _call_ollama(prompt)
     return _extract_tla_block(response)

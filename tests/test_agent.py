@@ -155,6 +155,71 @@ class TestNeedhamSchroeder(unittest.TestCase):
         self.assertTrue(fixed.passed,             "Fixed NS should be verified")
 
 
+class TestOAuth2(unittest.TestCase):
+    """OAuth 2.0 authorization code interception: insecure version violated, PKCE fixed version passes."""
+
+    def test_oauth2_insecure_finds_violation(self):
+        """TLC must find the code interception attack in OAuth2 without PKCE."""
+        result = tlc_runner.run_tlc("OAuth2")
+        self.assertTrue(
+            result.violation_found,
+            "TLC should find the authorization code interception attack in OAuth2"
+        )
+
+    def test_oauth2_insecure_has_counterexample(self):
+        """The counterexample must show attacker obtaining the token."""
+        result = tlc_runner.run_tlc("OAuth2")
+        trace = result.counterexample or result.output
+        self.assertTrue(
+            "attacker" in trace.lower(),
+            "Counterexample should reference the attacker"
+        )
+
+    def test_oauth2_fixed_passes(self):
+        """PKCE fix (OAuth2Fixed) must make OnlyClientGetsToken hold."""
+        result = tlc_runner.run_tlc("OAuth2Fixed")
+        self.assertTrue(
+            result.passed,
+            "OAuth2Fixed should be verified secure — PKCE prevents code interception"
+        )
+
+    def test_oauth2_contrast(self):
+        """Original OAuth2 fails, OAuth2Fixed passes — PKCE fix works."""
+        insecure = tlc_runner.run_tlc("OAuth2")
+        fixed    = tlc_runner.run_tlc("OAuth2Fixed")
+        self.assertTrue(insecure.violation_found, "OAuth2 without PKCE should be broken")
+        self.assertTrue(fixed.passed,             "OAuth2 with PKCE should be verified")
+
+
+class TestGenerativeLoop(unittest.TestCase):
+    """Generative loop: LLM generates a fix, generate_fix returns valid TLA+ text."""
+
+    def test_generate_fix_returns_tla_text(self):
+        """generate_fix() must return a non-empty string containing TLA+ module syntax."""
+        result   = tlc_runner.run_tlc("OAuth2")
+        spec_dir = Path(__file__).parent.parent / "specs"
+        spec_text = (spec_dir / "OAuth2.tla").read_text()
+
+        analysis      = llm_client.analyze_violation(spec_text, result.output)
+        attack_summary = llm_client.summarize_attack(analysis)
+        generated     = llm_client.generate_fix(spec_text, attack_summary, "OAuth2LLMFixed")
+
+        self.assertIsInstance(generated, str)
+        self.assertGreater(len(generated), 100, "Generated spec was too short to be valid TLA+")
+        self.assertIn("MODULE", generated, "Generated text does not look like a TLA+ module")
+
+    def test_summarize_attack_returns_short_string(self):
+        """summarize_attack() must return a non-empty string under 300 chars."""
+        analysis = (
+            "This is an authorization code interception attack where the attacker "
+            "steals the code from the redirect URL and exchanges it for a token."
+        )
+        summary = llm_client.summarize_attack(analysis)
+        self.assertIsInstance(summary, str)
+        self.assertGreater(len(summary), 0)
+        self.assertLessEqual(len(summary), 300)
+
+
 class TestFullLoop(unittest.TestCase):
     """End-to-end: TLC finds attack, LLM explains it."""
 
