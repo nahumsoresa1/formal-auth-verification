@@ -30,6 +30,56 @@ def _extract_tla_block(text: str) -> str:
     return text.strip()
 
 
+def _sanitize_tla(text: str) -> str:
+    """
+    Auto-correct the most common TLA+ syntax errors that LLMs produce.
+    Applied to every generated spec before it is written to disk.
+
+    Fixes applied:
+      1. != → #  (TLA+ not-equal operator)
+      2. Any line of 4+ '=' signs → ====  (module footer)
+      3. ClientVerifier used but missing from CONSTANTS → add it
+      4. Duplicate var names in UNCHANGED (e.g. <<phase, ..., phase>>) → deduplicate
+    """
+    # ── 1. != → # ─────────────────────────────────────────────────────────────
+    text = text.replace("!=", "#")
+
+    # ── 2. Footer normalisation ────────────────────────────────────────────────
+    # A line that is only '=' chars (4 or more, with optional trailing whitespace)
+    text = re.sub(r"^={4,}\s*$", "====", text, flags=re.MULTILINE)
+
+    # ── 3. ClientVerifier in CONSTANTS ────────────────────────────────────────
+    if re.search(r"\bClientVerifier\b", text):
+        constants_m = re.search(r"^CONSTANTS\b(.+)$", text, re.MULTILINE)
+        if constants_m and "ClientVerifier" not in constants_m.group(1):
+            # Append to existing CONSTANTS line
+            text = re.sub(
+                r"^(CONSTANTS\b.+)$",
+                r"\1, ClientVerifier",
+                text, count=1, flags=re.MULTILINE,
+            )
+        elif not constants_m:
+            # No CONSTANTS block at all — inject one after EXTENDS
+            text = re.sub(
+                r"^(EXTENDS\b.+)$",
+                r"\1\n\nCONSTANTS Client, AuthServer, Attacker, ClientVerifier",
+                text, count=1, flags=re.MULTILINE,
+            )
+
+    # ── 4. Deduplicate items in UNCHANGED <<...>> ──────────────────────────────
+    def dedup_unchanged(m: re.Match) -> str:
+        inner = m.group(1)
+        seen: list[str] = []
+        for part in [p.strip() for p in inner.split(",")]:
+            if part and part not in seen:
+                seen.append(part)
+        return f"UNCHANGED <<{', '.join(seen)}>>"
+
+    text = re.sub(r"UNCHANGED\s*<<([^>]+)>>", dedup_unchanged, text)
+
+    return text
+
+
 def _call_ollama(prompt: str) -> str:
     """Send a prompt to Ollama and stream the response."""
     collected = []
@@ -92,7 +142,8 @@ def generate_fix(
             fixed_module_name=fixed_module_name,
         )
     response = _call_ollama(prompt)
-    return _extract_tla_block(response)
+    raw = _extract_tla_block(response)
+    return _sanitize_tla(raw)
 
 
 def summarize_attack(analysis: str) -> str:

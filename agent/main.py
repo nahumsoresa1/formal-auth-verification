@@ -182,15 +182,32 @@ def generative_loop(
         )
 
         if is_parse_error:
-            # Extract the most useful part of the TLC error for the retry prompt
+            # Extract the lines that describe the actual TLC error, not boilerplate
+            SKIP_PREFIXES = ("TLC2", "Warning", "Running ", "(Mac", "(Use", "Parsing file")
+            SKIP_SUBSTRINGS = ("jar:file",)
+            USEFUL_KEYWORDS = ("***", "Error", "error", "Unexpected", "undefined",
+                               "undeclared", "line ", " col ", "Parse")
+
+            all_lines = fixed_result.output.splitlines()
+            # First pass: lines that look like actual errors
             error_lines = [
-                ln for ln in fixed_result.output.splitlines()
-                if ln.strip() and not ln.startswith("TLC2") and not ln.startswith("Warning")
-                   and not ln.startswith("Running") and not ln.startswith("(Mac")
+                ln for ln in all_lines
+                if any(kw in ln for kw in USEFUL_KEYWORDS)
+                and not any(ln.startswith(p) for p in SKIP_PREFIXES)
+                and not any(s in ln for s in SKIP_SUBSTRINGS)
             ]
+            # Fall back: any non-boilerplate line
+            if not error_lines:
+                error_lines = [
+                    ln for ln in all_lines
+                    if ln.strip()
+                    and not any(ln.startswith(p) for p in SKIP_PREFIXES)
+                    and not any(s in ln for s in SKIP_SUBSTRINGS)
+                ]
+
             previous_error = "\n".join(error_lines[:20])
             fail(f"Iteration {iteration}: parse error in generated spec:")
-            print(f"  {previous_error[:300]}")
+            print(f"  {previous_error[:400]}")
             continue
 
         result_summary(fixed_module_name, fixed_result.passed, fixed_result.states_explored)
