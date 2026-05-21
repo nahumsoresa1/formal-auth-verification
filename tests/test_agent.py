@@ -92,6 +92,33 @@ class TestOllamaConnection(unittest.TestCase):
         self.assertGreater(len(analysis), 50, "LLM analysis was too short to be useful")
 
 
+class TestSecureLogin(unittest.TestCase):
+    """SecureLogin.tla must pass TLC — no violations."""
+
+    def test_secure_login_passes(self):
+        """NoReplay invariant must HOLD in SecureLogin — nonce prevents replay."""
+        result = tlc_runner.run_tlc("SecureLogin")
+        self.assertTrue(
+            result.passed,
+            "SecureLogin should be verified secure but TLC found a violation"
+        )
+
+    def test_secure_login_no_violation(self):
+        """TLC must find zero violations in SecureLogin."""
+        result = tlc_runner.run_tlc("SecureLogin")
+        self.assertFalse(
+            result.violation_found,
+            "SecureLogin should have no security violations"
+        )
+
+    def test_contrast_insecure_vs_secure(self):
+        """InsecureLogin fails, SecureLogin passes — the fix works."""
+        insecure = tlc_runner.run_tlc("InsecureLogin")
+        secure   = tlc_runner.run_tlc("SecureLogin")
+        self.assertTrue(insecure.violation_found, "InsecureLogin should be broken")
+        self.assertTrue(secure.passed,            "SecureLogin should be verified")
+
+
 class TestFullLoop(unittest.TestCase):
     """End-to-end: TLC finds attack, LLM explains it."""
 
