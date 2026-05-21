@@ -2,16 +2,13 @@
 LLM client — talks to Ollama running locally.
 
 Ollama setup (one-time):
-  1. Install: https://ollama.com/download
-  2. Pull a model: ollama pull llama3.1
-  3. Make sure Ollama is running (it starts automatically on Mac after install)
-
-No API key, no cost, runs entirely on your machine.
+  1. Install: brew install ollama
+  2. Start server: ollama serve
+  3. Pull model: ollama pull llama3.1
 """
 
 import re
-import requests
-import json
+import ollama
 from prompts import (
     SYSTEM_PROMPT,
     GENERATE_SPEC_PROMPT,
@@ -19,8 +16,7 @@ from prompts import (
     FIX_SPEC_PROMPT,
 )
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "llama3.1"  # change to "llama3.1:70b" if you have 32GB+ RAM
+MODEL = "llama3.1"
 
 
 def _extract_tla_block(text: str) -> str:
@@ -35,34 +31,21 @@ def _extract_tla_block(text: str) -> str:
 
 
 def _call_ollama(prompt: str) -> str:
-    """Send a prompt to Ollama and stream the response back."""
-    payload = {
-        "model": MODEL,
-        "prompt": f"{SYSTEM_PROMPT}\n\n{prompt}",
-        "stream": True,
-    }
-
-    try:
-        response = requests.post(OLLAMA_URL, json=payload, stream=True, timeout=120)
-        response.raise_for_status()
-    except requests.exceptions.ConnectionError:
-        raise RuntimeError(
-            "Cannot connect to Ollama. Make sure it's running.\n"
-            "Install: https://ollama.com/download\n"
-            "Then run: ollama pull llama3.1"
-        )
-
+    """Send a prompt to Ollama and stream the response."""
     collected = []
-    for line in response.iter_lines():
-        if line:
-            chunk = json.loads(line)
-            token = chunk.get("response", "")
-            print(token, end="", flush=True)
-            collected.append(token)
-            if chunk.get("done"):
-                break
-
-    print()  # newline after stream
+    stream = ollama.chat(
+        model=MODEL,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": prompt},
+        ],
+        stream=True,
+    )
+    for chunk in stream:
+        token = chunk["message"]["content"]
+        print(token, end="", flush=True)
+        collected.append(token)
+    print()
     return "".join(collected)
 
 

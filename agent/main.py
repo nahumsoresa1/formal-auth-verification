@@ -2,247 +2,161 @@
 """
 TLA+ Security Verification Agent
 ==================================
-Uses Claude (claude-opus-4-7) to:
-  1. Generate a TLA+ spec for a user-described protocol
-  2. Run TLC to model-check it
-  3. If a security violation is found, explain the attack
-  4. Generate a fixed spec and re-verify
-  5. Loop until the protocol is verified secure (or max iterations reached)
+Automatically verifies security protocols using TLA+ and TLC.
+
+The agent:
+  1. Loads a TLA+ spec (pre-written or from specs/ folder)
+  2. Runs TLC to exhaustively check all states
+  3. If a security violation is found, uses an LLM to explain the attack
+  4. Loops until verified or max iterations reached
 
 Usage:
-  python3 main.py                     # interactive mode
-  python3 main.py --demo insecure     # run the insecure login demo
-  python3 main.py --demo ns           # run the Needham-Schroeder demo
+  python3 main.py --demo insecure     # insecure login (replay attack demo)
+  python3 main.py --demo ns           # Needham-Schroeder (coming soon)
+  python3 main.py --spec MyProtocol   # run TLC on specs/MyProtocol.tla
 """
 
 import sys
-import os
 import argparse
 import textwrap
 from pathlib import Path
 
-# Make sure we can import sibling modules
 sys.path.insert(0, str(Path(__file__).parent))
 
-import llm_client as claude_client
+import llm_client
 import tlc_runner
 
-# ── Demo protocol descriptions ─────────────────────────────────────────────────
+# ── Built-in demos — point directly at pre-written specs ──────────────────────
 
-DEMO_PROTOCOLS = {
+DEMOS = {
     "insecure": {
-        "name": "InsecureLoginDemo",
-        "description": textwrap.dedent("""\
-            A basic username/password login protocol where:
-            - The client sends username and password in plaintext over the network
-            - The server receives the credentials and grants access
-            - An attacker can intercept messages on the network
-            - An attacker who intercepts credentials can replay them later
-            - Model the attacker's ability to intercept and replay messages
-            - The SecurityProperty should be: only the real user (not the attacker) can be authenticated
-        """),
+        "module": "InsecureLogin",
+        "title":  "Insecure Login Protocol (Replay Attack)",
     },
     "ns": {
-        "name": "NeedhamSchroeder",
-        "description": textwrap.dedent("""\
-            The Needham-Schroeder Public Key Protocol:
-            - Initiator A wants to authenticate with Responder B
-            - A sends to B: {A, Na} encrypted with B's public key (Na = nonce from A)
-            - B sends to A: {Na, Nb} encrypted with A's public key (Nb = nonce from B)
-            - A sends to B: {Nb} encrypted with B's public key
-            - Model a man-in-the-middle attacker who can intercept and forward messages
-            - The SecurityProperty (authentication): if B finishes the protocol thinking
-              they are talking to A, then A must have actually initiated with B
-            - This protocol has a known flaw: the attacker (E) can use A to help
-              attack B by starting a session with A and using A's responses to fool B
-        """),
+        "module": "NeedhamSchroeder",
+        "title":  "Needham-Schroeder Protocol (coming soon)",
     },
 }
 
-# ── Pretty-print helpers ────────────────────────────────────────────────────────
+# ── Pretty print helpers ───────────────────────────────────────────────────────
 
-def header(text: str):
-    print(f"\n{'═' * 65}")
-    print(f"  {text}")
-    print(f"{'═' * 65}\n")
+def header(text):
+    print(f"\n{'═' * 65}\n  {text}\n{'═' * 65}\n")
 
-def section(text: str):
-    print(f"\n{'─' * 65}")
-    print(f"  {text}")
-    print(f"{'─' * 65}")
+def section(text):
+    print(f"\n{'─' * 65}\n  {text}\n{'─' * 65}")
 
-def success(text: str):
+def ok(text):
     print(f"\n✅  {text}")
 
-def failure(text: str):
+def fail(text):
     print(f"\n❌  {text}")
 
-def info(text: str):
-    print(f"ℹ️   {text}")
+def info(text):
+    print(f"    {text}")
 
-# ── Core verification loop ──────────────────────────────────────────────────────
+# ── Core verification loop ─────────────────────────────────────────────────────
 
-def run_verification_loop(protocol_name: str, protocol_description: str, max_iterations: int = 3):
+def verify(module_name: str, title: str, max_iterations: int = 3):
     """
-    Main agentic loop:
-      - Generate spec → run TLC → if violation → analyze + fix → repeat
+    Main loop:
+      run TLC → if violation → LLM explains → loop
     """
-    header(f"TLA+ Security Verification Agent")
-    info(f"Protocol: {protocol_name}")
-    info(f"Max fix iterations: {max_iterations}\n")
+    header(f"TLA+ Security Verification Agent\n  Protocol: {title}")
 
-    current_spec = None
-    current_module = protocol_name
+    specs_dir = Path(__file__).parent.parent / "specs"
+    spec_file = specs_dir / f"{module_name}.tla"
 
-    # ── Step 1: Generate initial spec ─────────────────────────────────────────
-    section("Step 1: Generating TLA+ Specification")
-    current_spec = claude_client.generate_spec(protocol_description, current_module)
-
-    if not current_spec or len(current_spec) < 50:
-        failure("Claude did not return a valid TLA+ spec. Aborting.")
+    if not spec_file.exists():
+        fail(f"Spec not found: specs/{module_name}.tla")
         return
 
-    # Save spec to disk
-    tlc_runner.run_tlc_on_content(current_spec, current_module)
-    info(f"Spec saved to: tla-specs/{current_module}.tla")
+    info(f"Spec: specs/{module_name}.tla")
 
     for iteration in range(max_iterations + 1):
-        # ── Step 2: Run TLC ────────────────────────────────────────────────────
-        section(f"Step 2: Running TLC Model Checker (iteration {iteration})")
-        result = tlc_runner.run_tlc(current_module)
+
+        # ── Run TLC ───────────────────────────────────────────────────────────
+        section(f"Running TLC — iteration {iteration + 1}")
+        result = tlc_runner.run_tlc(module_name)
 
         if result.states_explored:
             info(f"States explored: {result.states_explored:,}")
 
-        if result.error_output and not result.violation_found and not result.passed:
-            # TLC itself errored (parse error, etc.)
-            failure("TLC encountered an error:")
-            print(result.error_output[:2000])
-            print("\nFull output:")
-            print(result.output[:3000])
+        # ── Parse error in the spec ───────────────────────────────────────────
+        if "Parse Error" in result.output or "Parsing or semantic analysis failed" in result.output:
+            fail("TLC could not parse the spec — syntax error.")
+            print(result.output[:1000])
+            return
 
-            if iteration >= max_iterations:
-                failure("Max iterations reached with TLC errors. Please check the spec manually.")
-                return
-
-            # Ask Claude to fix syntax/parse errors
-            section(f"Step 3 (iter {iteration}): Fixing TLC parse error")
-            attack_summary = f"TLC parse/syntax error: {result.error_output[:500]}"
-            fixed_spec = claude_client.fix_spec(current_spec, attack_summary, current_module)
-            if fixed_spec and len(fixed_spec) > 50:
-                current_spec = fixed_spec
-                tlc_runner.run_tlc_on_content(current_spec, current_module)
-            continue
-
+        # ── Protocol is verified secure ───────────────────────────────────────
         if result.passed:
-            success(f"TLC verified the protocol — SecurityProperty holds!")
-            info(f"The protocol '{current_module}' is secure (no violations found).")
-            print(f"\nFinal spec saved at: tla-specs/{current_module}.tla")
+            ok("TLC verified the protocol — no violations found.")
+            info("The security property holds across all reachable states.")
             return
 
+        # ── Violation found — LLM explains ────────────────────────────────────
         if result.violation_found:
-            failure(f"Security violation found in '{current_module}'!")
+            fail("Security violation found!")
+
             if result.counterexample:
-                print("\nCounterexample trace:")
-                print(result.counterexample[:1500])
+                section("Counterexample Trace")
+                print(result.counterexample)
 
             if iteration >= max_iterations:
-                failure(f"Could not fix the vulnerability after {max_iterations} attempt(s).")
-                info("Try running again or refine the protocol description.")
+                fail(f"Reached max iterations ({max_iterations}).")
                 return
 
-            # ── Step 3: Analyze the attack ─────────────────────────────────────
-            section(f"Step 3 (iter {iteration + 1}): Analyzing the Security Attack")
-            analysis = claude_client.analyze_violation(current_spec, result.output)
-            attack_summary = claude_client.summarize_attack(analysis)
+            section("LLM Attack Analysis")
+            spec_text = spec_file.read_text()
+            analysis  = llm_client.analyze_violation(spec_text, result.output)
 
-            # ── Step 4: Generate fixed spec ────────────────────────────────────
-            section(f"Step 4 (iter {iteration + 1}): Generating Fixed Protocol")
-            # Use the same module name so TLC re-checks it
-            fixed_spec = claude_client.fix_spec(current_spec, attack_summary, current_module)
+            # ── If there's a fixed version available, run it next ─────────────
+            fixed_module = f"{module_name}Secure"
+            fixed_file   = specs_dir / f"{fixed_module}.tla"
 
-            if not fixed_spec or len(fixed_spec) < 50:
-                failure("Claude did not return a valid fixed spec. Stopping.")
+            if fixed_file.exists():
+                section(f"Running fixed version: specs/{fixed_module}.tla")
+                fixed_result = tlc_runner.run_tlc(fixed_module)
+                if fixed_result.passed:
+                    ok(f"{fixed_module} is verified secure — the fix works.")
+                else:
+                    fail(f"{fixed_module} still has violations.")
                 return
 
-            current_spec = fixed_spec
-            # Write the fixed spec (overwrite same module for re-checking)
-            tlc_runner.run_tlc_on_content(current_spec, current_module)
-            info(f"Fixed spec written. Re-running TLC...")
-            # Loop continues → TLC re-runs on the fixed spec
-
-        else:
-            # Neither passed nor violated — unclear result
-            failure("TLC finished but result is unclear. Full output:")
-            print(result.output[:2000])
+            info("No fixed spec found yet. Add one at specs/{module_name}Secure.tla")
             return
 
-    failure(f"Reached maximum iterations ({max_iterations}) without full verification.")
+        # ── Unclear result ─────────────────────────────────────────────────────
+        fail("TLC finished but result is unclear.")
+        print(result.output[:1500])
+        return
 
 
-# ── Interactive mode ────────────────────────────────────────────────────────────
-
-def interactive_mode():
-    header("TLA+ Security Verification Agent — Interactive Mode")
-    print("Describe a security protocol and I'll generate a TLA+ spec,")
-    print("model-check it with TLC, find attacks, and iteratively fix them.\n")
-
-    print("Protocol name (used as TLA+ module name, e.g. MyProtocol):")
-    name = input("  > ").strip()
-    if not name:
-        name = "MyProtocol"
-    # Sanitize: TLA+ module names are CamelCase, no spaces
-    name = "".join(w.capitalize() for w in name.split())
-
-    print("\nDescribe the protocol (type your description, then press Enter twice):")
-    lines = []
-    while True:
-        line = input()
-        if line == "" and lines and lines[-1] == "":
-            break
-        lines.append(line)
-    description = "\n".join(lines).strip()
-
-    if not description:
-        print("No description provided. Using insecure login demo.")
-        demo = DEMO_PROTOCOLS["insecure"]
-        name = demo["name"]
-        description = demo["description"]
-
-    run_verification_loop(name, description)
-
-
-# ── Entry point ─────────────────────────────────────────────────────────────────
+# ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(
-        description="TLA+ Security Verification Agent powered by Claude",
+        description="TLA+ Security Verification Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Examples:
-              python3 main.py                     # interactive mode
-              python3 main.py --demo insecure     # insecure login + replay attack
-              python3 main.py --demo ns           # Needham-Schroeder protocol
+              python3 main.py --demo insecure
+              python3 main.py --spec InsecureLogin
         """),
     )
-    parser.add_argument(
-        "--demo",
-        choices=["insecure", "ns"],
-        help="Run a built-in demo protocol",
-    )
-    parser.add_argument(
-        "--max-iter",
-        type=int,
-        default=3,
-        help="Maximum fix iterations (default: 3)",
-    )
+    parser.add_argument("--demo",     choices=list(DEMOS.keys()), help="Run a built-in demo")
+    parser.add_argument("--spec",     help="Module name of a spec in specs/ folder")
+    parser.add_argument("--max-iter", type=int, default=3, help="Max fix iterations (default: 3)")
     args = parser.parse_args()
 
     if args.demo:
-        demo = DEMO_PROTOCOLS[args.demo]
-        run_verification_loop(demo["name"], demo["description"], max_iterations=args.max_iter)
+        d = DEMOS[args.demo]
+        verify(d["module"], d["title"], max_iterations=args.max_iter)
+    elif args.spec:
+        verify(args.spec, args.spec, max_iterations=args.max_iter)
     else:
-        interactive_mode()
+        parser.print_help()
 
 
 if __name__ == "__main__":
