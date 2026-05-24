@@ -244,11 +244,18 @@ def _sanitize_tla(text: str) -> str:
 
     # ── 7. ClientVerifier in CONSTANTS ────────────────────────────────────────
     if re.search(r"\bClientVerifier\b", text):
-        cm = re.search(r"^CONSTANTS\b(.+)$", text, re.MULTILINE)
-        if cm and "ClientVerifier" not in cm.group(1):
+        # Single-line form:  CONSTANTS A, B, C
+        cm_inline = re.search(r"^CONSTANTS\b(.+)$", text, re.MULTILINE)
+        # Multi-line form:   CONSTANTS\n  A,\n  B
+        cm_block  = re.search(r"^CONSTANTS[ \t]*\n((?:[ \t]+[^\n]*\n)*)", text, re.MULTILINE)
+
+        if cm_inline and "ClientVerifier" not in cm_inline.group(1):
             text = re.sub(r"^(CONSTANTS\b.+)$", r"\1, ClientVerifier",
                           text, count=1, flags=re.MULTILINE)
-        elif not cm:
+        elif cm_block and "ClientVerifier" not in cm_block.group(0):
+            ins  = cm_block.end()
+            text = text[:ins] + "  ClientVerifier\n" + text[ins:]
+        elif not cm_inline and not cm_block:
             text = re.sub(r"^(EXTENDS\b.+)$",
                           r"\1\n\nCONSTANTS Client, AuthServer, Attacker, ClientVerifier",
                           text, count=1, flags=re.MULTILINE)

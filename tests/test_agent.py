@@ -190,6 +190,23 @@ class TestOAuth2(unittest.TestCase):
         self.assertTrue(insecure.violation_found, "OAuth2 without PKCE should be broken")
         self.assertTrue(fixed.passed,             "OAuth2 with PKCE should be verified")
 
+    def test_oauth2_fixed_implements_pkce_pattern(self):
+        """OAuth2Fixed.tla must use the correct PKCE pattern (attackerKnowsVerifier)."""
+        spec = (Path(__file__).parent.parent / "specs" / "OAuth2Fixed.tla").read_text()
+
+        self.assertIn("attackerKnowsVerifier", spec,
+                      "PKCE fix must declare attackerKnowsVerifier")
+
+        import re
+        self.assertTrue(re.search(r"attackerKnowsVerifier\s*=\s*FALSE", spec),
+                        "attackerKnowsVerifier must be initialized to FALSE in Init")
+
+        self.assertTrue(re.search(r"attackerKnowsVerifier\s*=\s*TRUE", spec),
+                        "AttackerExchangeCode must guard on attackerKnowsVerifier = TRUE")
+
+        self.assertFalse(re.search(r"attackerKnowsVerifier'\s*=\s*TRUE", spec),
+                         "attackerKnowsVerifier must NEVER be assigned TRUE (vacuous fix)")
+
 
 class TestGenerativeLoop(unittest.TestCase):
     """Generative loop: LLM generates a fix, generate_fix returns valid TLA+ text."""

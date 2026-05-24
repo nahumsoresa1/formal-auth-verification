@@ -22,6 +22,7 @@ Usage:
 """
 
 import sys
+import re
 import argparse
 import textwrap
 from pathlib import Path
@@ -30,6 +31,38 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 import llm_client
 import tlc_runner
+
+
+def _check_pkce_pattern(tla_text: str) -> str | None:
+    """
+    Verify that a generated spec implements the PKCE pattern correctly.
+    Returns None when the spec is valid, or a human-readable error string.
+
+    A correct PKCE fix must:
+      1. Declare attackerKnowsVerifier in VARIABLES
+      2. Initialize it to FALSE in Init
+      3. Use it as a guard in AttackerExchangeCode (/\\ attackerKnowsVerifier = TRUE)
+      4. Never set it to TRUE anywhere (the attacker can never learn the verifier)
+    """
+    if "attackerKnowsVerifier" not in tla_text:
+        return (
+            "Missing 'attackerKnowsVerifier'. Add it to VARIABLES, initialize "
+            "to FALSE in Init, and guard AttackerExchangeCode with "
+            "/\\ attackerKnowsVerifier = TRUE"
+        )
+    if not re.search(r"attackerKnowsVerifier\s*=\s*FALSE", tla_text):
+        return "attackerKnowsVerifier must be initialized to FALSE in Init."
+    if not re.search(r"attackerKnowsVerifier\s*=\s*TRUE", tla_text):
+        return (
+            "AttackerExchangeCode must contain the guard "
+            "/\\ attackerKnowsVerifier = TRUE"
+        )
+    if re.search(r"attackerKnowsVerifier'\s*=\s*TRUE", tla_text):
+        return (
+            "attackerKnowsVerifier must NEVER be set to TRUE — "
+            "remove the assignment attackerKnowsVerifier' = TRUE"
+        )
+    return None
 
 # ── Built-in demos ─────────────────────────────────────────────────────────────
 
@@ -248,6 +281,20 @@ def generative_loop(
         result_summary(fixed_module_name, fixed_result.passed, fixed_result.states_explored)
 
         if fixed_result.passed:
+            # For OAuth2, verify the fix actually models PKCE (not a vacuous fix)
+            if "OAuth2" in module_name:
+                pkce_issue = _check_pkce_pattern(generated_tla)
+                if pkce_issue:
+                    fail(f"Iteration {iteration}: TLC verified but fix does not implement proper PKCE — retrying.")
+                    previous_error = (
+                        f"The spec passes TLC but does NOT implement PKCE correctly:\n"
+                        f"{pkce_issue}\n\n"
+                        "Use the PKCE template. Required:\n"
+                        "1. attackerKnowsVerifier in VARIABLES, initialized FALSE in Init\n"
+                        "2. /\\ attackerKnowsVerifier = TRUE guard inside AttackerExchangeCode\n"
+                        "3. attackerKnowsVerifier NEVER set to TRUE anywhere"
+                    )
+                    continue
             ok(f"✨ Fix verified on iteration {iteration}! Attack is no longer possible.")
             _print_comparison(module_name, base_result, fixed_module_name, fixed_result)
             return True
