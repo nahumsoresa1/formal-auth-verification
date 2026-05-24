@@ -1,7 +1,7 @@
-# CE 356 Midterm Project Report
+# CE 365 Midterm Project Report
 ## Agentic System for Robust Cyber-Security
 
-**Northwestern University — CE 356: Intro. to Formal Spec. and Verification**
+**Northwestern University — CE 365: Intro. to Formal Spec. and Verification**
 **Prof. Hai Zhou**
 
 **Team Members:** Miguel Hernandez · Nahum Soresa

@@ -1,6 +1,6 @@
 # Agentic System for Robust Cyber-Security
 
-**CE 356 — Intro. to Formal Spec. and Verification | Northwestern University**
+**CE 365 — Intro. to Formal Spec. and Verification | Northwestern University**
 
 **Team:** Miguel Hernandez · Nahum Soresa
 
@@ -55,7 +55,7 @@ This is not testing — TLC provides a mathematical proof over all possible beha
 | `NeedhamSchroeder` | ❌ Violated | 17 | MITM — Eve impersonates Alice to Bob |
 | `NeedhamSchroederFixed` | ✅ Verified | 9 | Lowe's 1995 fix: identity in message 2 |
 | `OAuth2` | ❌ Violated | 9 | Authorization code interception |
-| `OAuth2Fixed` | ✅ Verified | 11 | PKCE (RFC 7636) blocks code theft |
+| `OAuth2Fixed` | ✅ Verified | 8 | PKCE (RFC 7636) blocks code theft |
 
 ---
 
@@ -100,7 +100,7 @@ python3 main.py --spec MyProto --generate  # generative loop on any spec
 ## Test
 
 ```bash
-python3 tests/test_agent.py       # 15 tests — all should pass
+python3 tests/test_agent.py       # 22 tests — all should pass
 ```
 
 ---
