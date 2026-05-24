@@ -128,6 +128,21 @@ Generate a corrected TLA+ spec with module name exactly: {fixed_module_name}
 - "Unexpected symbol" near === → the footer must be exactly ==== (four = signs)
 - "undefined or declared twice" → you called a function like hash() or fresh() — remove it, use a CONSTANT instead
 - Invariant still violated → your attacker action is not truly blocked; add /\\ attackerKnowsVerifier = TRUE to AttackerExchangeCode, and never set attackerKnowsVerifier to TRUE anywhere
+- "Unexpected symbol" near ] or -> in Next → you used [guard] ActionName — THIS IS NOT VALID TLA+. NEVER put [...]  inside Next. The Next definition must list bare action names only.
+
+━━━ CRITICAL RULE ABOUT Next ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The Next operator MUST be EXACTLY this — no guards, no brackets, no conditions:
+
+  Next ==
+    \\/ AuthServerIssueCode
+    \\/ AttackerInterceptCode
+    \\/ ClientExchangeCode
+    \\/ AttackerExchangeCode
+
+NEVER write:  \\/ [~X -> FALSE] AttackerExchangeCode
+NEVER write:  \\/ (/\\ ~x /\\ AttackerExchangeCode)
+NEVER write:  \\/ [AttackerExchangeCode]
+The attack is blocked by the guard INSIDE AttackerExchangeCode, not in Next.
 
 ━━━ CORRECT PKCE FIX TEMPLATE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Use this exact pattern to block code interception:
