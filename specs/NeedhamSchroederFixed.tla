@@ -41,6 +41,14 @@ VARIABLES
 
 vars == <<aPhase, aPartner, bPhase, eKnows, msgs>>
 
+\* TypeOK: inductive type invariant (Lamport, Specifying Systems, ch.4).
+\* TLC checks this alongside Authentication to confirm the fixed spec is well-typed.
+TypeOK ==
+  /\ aPhase \in {"idle", "waiting", "done"}
+  /\ aPartner \in {Alice, Bob, Eve, "none"}
+  /\ bPhase \in {"idle", "waiting", "done"}
+  \* eKnows is a subset of nonces and msgs is a set of records — TLC verifies at runtime
+
 Init ==
   /\ aPhase   = "idle"
   /\ aPartner = "none"

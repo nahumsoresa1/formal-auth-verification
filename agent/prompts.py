@@ -82,25 +82,46 @@ DO NOT USE:
   - === (the footer is exactly ====)
   - Any operator not listed above
 
-━━━ HOW TO FIX EACH ATTACK TYPE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+━━━ EXAMPLE — correct TLA+ syntax ━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-CODE INTERCEPTION / OAUTH2 → PKCE PATTERN:
-  Add CONSTANT  ClientVerifier
-  Add variable  attackerKnowsVerifier   initialized to FALSE, never set to TRUE
-  In AuthServerIssueCode:    storedChallenge' = ClientVerifier
-  In ClientExchangeCode:     add guard  /\\ storedChallenge = ClientVerifier
-  In AttackerExchangeCode:   add guard  /\\ attackerKnowsVerifier = TRUE
-  Since attackerKnowsVerifier is always FALSE → AttackerExchangeCode is NEVER enabled.
+Below is a complete correctly-formatted TLA+ spec. Match this structure exactly:
 
-REPLAY ATTACK → NONCE PATTERN:
-  Add variable  nonce   initialized to "none"
-  Server sets:  nonce' = "challenge1"
-  Client checks:  nonce # "none"  and sets  nonce' = "used"
-  Attacker action requires fresh nonce — impossible once used.
+```tla
+---- MODULE ExampleFixed ----
+EXTENDS Naturals
 
-MITM ATTACK → IDENTITY BINDING:
-  Add sender field to messages: sender |-> ActualSender
-  Receiver verifies: m.sender = ExpectedPartner
+CONSTANTS User, Attacker
+
+VARIABLES
+  phase,
+  authorized
+
+vars == <<phase, authorized>>
+
+Init ==
+  /\ phase      = "idle"
+  /\ authorized = FALSE
+
+UserAction ==
+  /\ phase  = "idle"
+  /\ phase' = "done"
+  /\ authorized' = TRUE
+  /\ UNCHANGED <<>>
+
+AttackerAction ==
+  /\ phase = "idle"
+  /\ FALSE
+  /\ UNCHANGED vars
+
+Next ==
+  \\/ UserAction
+  \\/ AttackerAction
+
+Spec == Init /\\ [][Next]_vars
+
+SafetyProp == authorized => phase = "done"
+====
+```
 
 ━━━ OUTPUT ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Output ONLY the fixed TLA+ spec inside a ```tla ... ``` code block. Nothing else."""
@@ -127,73 +148,21 @@ Generate a corrected TLA+ spec with module name exactly: {fixed_module_name}
 - "Parse error" near a variable list → remove trailing comma from last variable
 - "Unexpected symbol" near === → the footer must be exactly ==== (four = signs)
 - "undefined or declared twice" → you called a function like hash() or fresh() — remove it, use a CONSTANT instead
-- Invariant still violated → your attacker action is not truly blocked; add /\\ attackerKnowsVerifier = TRUE to AttackerExchangeCode, and never set attackerKnowsVerifier to TRUE anywhere
+- Invariant still violated → the attacker action is not truly blocked. Add an impossible guard INSIDE the attacker action (a variable initialized to FALSE that is never set to TRUE). Never remove the action from Next — the block goes inside the action.
 - "Unexpected symbol" near ] or -> in Next → you used [guard] ActionName — THIS IS NOT VALID TLA+. NEVER put [...]  inside Next. The Next definition must list bare action names only.
 
 ━━━ CRITICAL RULE ABOUT Next ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 The Next operator MUST be EXACTLY this — no guards, no brackets, no conditions:
 
   Next ==
-    \\/ AuthServerIssueCode
-    \\/ AttackerInterceptCode
-    \\/ ClientExchangeCode
-    \\/ AttackerExchangeCode
+    \\/ ActionA
+    \\/ ActionB
+    \\/ ActionC
+    \\/ AttackerAction
 
-NEVER write:  \\/ [~X -> FALSE] AttackerExchangeCode
-NEVER write:  \\/ (/\\ ~x /\\ AttackerExchangeCode)
-NEVER write:  \\/ [AttackerExchangeCode]
-The attack is blocked by the guard INSIDE AttackerExchangeCode, not in Next.
-
-━━━ CORRECT PKCE FIX TEMPLATE ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Use this exact pattern to block code interception:
-
-  CONSTANTS Client, AuthServer, Attacker, ClientVerifier
-
-  VARIABLES
-    phase,
-    storedChallenge,
-    codeOnWire,
-    codeUsed,
-    attackerHasCode,
-    attackerKnowsVerifier,
-    tokenHolder
-
-  Init ==
-    /\\ phase                 = "idle"
-    /\\ storedChallenge       = "none"
-    /\\ codeOnWire            = FALSE
-    /\\ codeUsed              = FALSE
-    /\\ attackerHasCode       = FALSE
-    /\\ attackerKnowsVerifier = FALSE
-    /\\ tokenHolder           = "none"
-
-  AuthServerIssueCode ==
-    /\\ phase            = "idle"
-    /\\ storedChallenge' = ClientVerifier
-    /\\ codeOnWire'      = TRUE
-    /\\ phase'           = "code_issued"
-    /\\ UNCHANGED <<codeUsed, attackerHasCode, attackerKnowsVerifier, tokenHolder>>
-
-  AttackerInterceptCode ==
-    /\\ codeOnWire       = TRUE
-    /\\ attackerHasCode' = TRUE
-    /\\ UNCHANGED <<phase, storedChallenge, codeOnWire, codeUsed, attackerKnowsVerifier, tokenHolder>>
-
-  ClientExchangeCode ==
-    /\\ phase            = "code_issued"
-    /\\ ~codeUsed
-    /\\ storedChallenge  = ClientVerifier
-    /\\ codeUsed'    = TRUE
-    /\\ tokenHolder' = "client"
-    /\\ phase'       = "done"
-    /\\ UNCHANGED <<storedChallenge, codeOnWire, attackerHasCode, attackerKnowsVerifier>>
-
-  AttackerExchangeCode ==
-    /\\ attackerHasCode       = TRUE
-    /\\ attackerKnowsVerifier = TRUE
-    /\\ ~codeUsed
-    /\\ codeUsed'    = TRUE
-    /\\ tokenHolder' = "attacker"
-    /\\ UNCHANGED <<phase, storedChallenge, codeOnWire, attackerHasCode, attackerKnowsVerifier>>
+NEVER write:  \\/ [~X -> FALSE] AttackerAction
+NEVER write:  \\/ (/\\ ~x /\\ AttackerAction)
+NEVER write:  \\/ [AttackerAction]
+The attack is blocked by the guard INSIDE AttackerAction, not in Next.
 
 Output ONLY the fixed TLA+ spec inside a ```tla ... ``` code block. Nothing else."""

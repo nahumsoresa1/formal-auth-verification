@@ -32,6 +32,15 @@ VARIABLES
 
 vars == <<phase, nonceUsed, network, loggedIn, authenticatedBy>>
 
+\* TypeOK: inductive type invariant (Lamport, Specifying Systems, ch.4).
+\* TLC checks this alongside NoReplay to confirm the fixed spec is well-typed.
+TypeOK ==
+  /\ phase \in {"idle", "challenged", "responded", "done"}
+  /\ nonceUsed \in BOOLEAN
+  /\ loggedIn \in BOOLEAN
+  /\ authenticatedBy \in {"none", "user", "attacker"}
+  \* network omitted — sequence of arbitrary messages, unbounded type
+
 Init ==
   /\ phase           = "idle"
   /\ nonceUsed       = FALSE
@@ -93,8 +102,17 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
+\* FairSpec: adds weak fairness so TLC can verify liveness properties.
+\* Without fairness the model can stutter forever — <> properties require it
+\* (Lamport, Specifying Systems, ch.8, temporal logic).
+FairSpec == Spec /\ WF_vars(Next)
+
 \* SECURITY PROPERTY: only the legitimate user can authenticate
 \* TLC verifies this HOLDS — unlike InsecureLogin where it is violated
 NoReplay == loggedIn => authenticatedBy = "user"
+
+\* LIVENESS PROPERTY: authentication must eventually complete.
+\* TLC verifies this holds under weak fairness — the protocol always terminates.
+EventuallyAuthenticated == <>(loggedIn = TRUE)
 
 ================================================================================

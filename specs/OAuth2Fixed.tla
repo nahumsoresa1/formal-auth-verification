@@ -47,6 +47,17 @@ VARIABLES
 vars == <<phase, storedChallenge, codeOnWire, codeUsed,
           attackerHasCode, attackerKnowsVerifier, tokenHolder>>
 
+\* TypeOK: type invariant for the PKCE-fixed protocol.
+\* Per Lamport ch.4: a well-typed spec is the foundation of the inductive proof.
+TypeOK ==
+  /\ phase \in {"idle", "code_issued", "done"}
+  /\ storedChallenge \in {"none"} \cup {ClientVerifier}
+  /\ codeOnWire \in BOOLEAN
+  /\ codeUsed \in BOOLEAN
+  /\ attackerHasCode \in BOOLEAN
+  /\ attackerKnowsVerifier \in BOOLEAN
+  /\ tokenHolder \in {"none", "client", "attacker"}
+
 Init ==
   /\ phase                = "idle"
   /\ storedChallenge      = "none"
@@ -104,7 +115,17 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
+\* FairSpec: adds weak fairness so TLC can verify liveness properties.
+\* Without fairness the model can stutter forever — <> properties require it
+\* (Lamport, Specifying Systems, ch.8, temporal logic).
+FairSpec == Spec /\ WF_vars(Next)
+
 \* SECURITY PROPERTY — TLC verifies this HOLDS with PKCE applied
 OnlyClientGetsToken == tokenHolder \in {"none", "client"}
+
+\* LIVENESS PROPERTY: the client must eventually receive the token.
+\* Holds because ClientExchangeCode is always eventually enabled and
+\* AttackerExchangeCode is permanently blocked by its impossible guard.
+EventuallyClientGetsToken == <>(tokenHolder = "client")
 
 ================================================================================

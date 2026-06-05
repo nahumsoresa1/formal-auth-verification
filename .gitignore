@@ -1,3 +1,7 @@
+# Reports (submitted directly to professor, not for GitHub)
+docs/Final_Report.md
+docs/Midterm_Report.md
+
 # TLC model checker generated files
 specs/*_TTrace_*.tla
 specs/*_TTrace_*.bin
